@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Game Forge Runner</title>
+</head>
+<body>
+<script>
+(function () {
+  // ---------- helpers ----------
+
+  // Make sure we hand the chat webview a complete HTML document with a sensible
+  // mobile viewport. If the model already produced a full document, leave it
+  // alone except for injecting a viewport meta if missing. If it gave us only
+  // a fragment, wrap it in a minimal harness.
+  function ensureFullDocument(html) {
+    var hasDoctype = /<!DOCTYPE/i.test(html);
+    var hasHtmlTag = /<html[\s>]/i.test(html);
+    var hasBody    = /<body[\s>]/i.test(html);
+
+    if (hasDoctype && hasHtmlTag && hasBody) {
+      if (!/name=["']?viewport/i.test(html)) {
+        html = html.replace(
+          /<head[^>]*>/i,
+          function (m) {
+            return m + '\n<meta name="viewport" content="width=device-width, initial-scale=1.0">';
+          }
+        );
+      }
+      return html;
+    }
+
+    // Wrap a fragment.
+    return [
+      '<!DOCTYPE html>',
+      '<html><head>',
+      '<meta charset="utf-8">',
+      '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
+      '<style>',
+      'html,body{margin:0;padding:0;height:100%;font-family:system-ui,-apple-system,Roboto,Helvetica,sans-serif;',
+      '-webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none;overflow:hidden;}',
+      '</style>',
+      '</head><body>',
+      html,
+      '</body></html>'
+    ].join('\n');
+  }
+
+  // UTF-8 safe base64. The classic encodeURIComponent + unescape trick is the
+  // most portable approach across Android/iOS WebViews.
+  function utf8Btoa(str) {
+    return btoa(unescape(encodeURIComponent(str)));
+  }
+
+  function clip(s, n) {
+    s = (s == null ? '' : String(s));
+    return s.length > n ? s.slice(0, n) : s;
+  }
+
+  // ---------- main entry point ----------
+
+  window['ai_edge_gallery_get_result'] = async function (data) {
+    try {
+      // The app passes `data` as a stringified JSON. Be defensive in case it
+      // arrives already-parsed.
+      var params;
+      try {
+        params = (typeof data === 'string') ? JSON.parse(data) : (data || {});
+      } catch (parseErr) {
+        return JSON.stringify({
+          error: 'Invalid JSON in data: ' + parseErr.message
+        });
+      }
+
+      var gameHtml        = params.gameHtml;
+      var gameTitle       = clip(params.gameTitle || 'Game', 60);
+      var gameDescription = clip(params.gameDescription || '', 200);
+
+      if (!gameHtml || typeof gameHtml !== 'string') {
+        return JSON.stringify({
+          error: 'Missing required field "gameHtml" (string). The model did not provide game source.'
+        });
+      }
+
+      gameHtml = gameHtml.trim();
+
+      if (gameHtml.length < 30) {
+        return JSON.stringify({ error: 'gameHtml is too short to be a valid game.' });
+      }
+      if (gameHtml.length > 200000) {
+        return JSON.stringify({ error: 'gameHtml exceeds 200KB and was rejected.' });
+      }
+
+      // Reject obvious external-resource attempts. The skill instructions
+      // forbid these, but on-device models occasionally slip them in.
+      var externalPatterns = [
+        /<link[^>]+rel=["']?stylesheet["']?[^>]*href=["']?https?:\/\//i,
+        /<script[^>]+src=["']?https?:\/\//i,
+        /<img[^>]+src=["']?https?:\/\//i
+      ];
+      for (var i = 0; i < externalPatterns.length; i++) {
+        if (externalPatterns[i].test(gameHtml)) {
+          return JSON.stringify({
+            error: 'gameHtml references an external URL. The skill requires fully self-contained HTML — please regenerate without external links, scripts, or images.'
+          });
+        }
+      }
+
+      var fullDoc = ensureFullDocument(gameHtml);
+
+      // Build a data: URL that the chat webview can load directly.
+      var dataUrl = 'data:text/html;charset=utf-8;base64,' + utf8Btoa(fullDoc);
+
+      var caption = gameTitle;
+      if (gameDescription) caption += ' — ' + gameDescription;
+
+      return JSON.stringify({
+        result: caption,
+        webview: {
+          url: dataUrl,
+          // Slightly taller than wide reads well in the chat column on a phone.
+          aspectRatio: 0.8
+        }
+      });
+    } catch (e) {
+      return JSON.stringify({
+        error: 'Runner exception: ' + (e && e.message ? e.message : String(e))
+      });
+    }
+  };
+})();
+</script>
+</body>
+</html>
